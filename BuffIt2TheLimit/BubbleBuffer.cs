@@ -1258,6 +1258,32 @@ namespace BuffIt2TheLimit {
 
                 widget.SetActive(show);
             }
+
+            UpdateSectionVisibility();
+        }
+
+        /// <summary>
+        /// Hides level sections whose buffs are all filtered out, and the header
+        /// itself when a category ends up with a single visible level (a lone
+        /// "Other" over the Songs tab is noise, not grouping).
+        /// </summary>
+        private void UpdateSectionVisibility() {
+            if (view.buffSections.Count == 0)
+                return;
+
+            int visibleSections = 0;
+            foreach (var section in view.buffSections) {
+                bool any = section.Root != null && section.Widgets.Any(w => w != null && w.activeSelf);
+                if (section.Root != null && section.Root.activeSelf != any)
+                    section.Root.SetActive(any);
+                if (any)
+                    visibleSections++;
+            }
+
+            foreach (var section in view.buffSections) {
+                if (section.Header != null)
+                    section.Header.SetActive(visibleSections > 1);
+            }
         }
 
         private Action HideCasterPopout;
@@ -3863,6 +3889,17 @@ namespace BuffIt2TheLimit {
         public Dictionary<BuffKey, GameObject> buffWidgets = new();
         public List<(BuffKey key, string name, int discovery)> DisplayOrder = new();
 
+        // Buff list level grouping: one section per spell level (header + 2-column
+        // grid). Rebuilt by MakeBuffsList, emptied/hidden per level by RefreshFiltering.
+        public List<LevelSection> buffSections = new();
+
+        internal class LevelSection {
+            public GameObject Root;
+            public GameObject Header;
+            public Transform Grid;
+            public readonly List<GameObject> Widgets = new();
+        }
+
         public GameObject buffWindow;
         public GameObject removeFromAll;
         public GameObject addToAll;
@@ -3914,7 +3951,9 @@ namespace BuffIt2TheLimit {
             availableBuffs.transform.SetAsFirstSibling();
             Main.Verbose("made new buff list");
             availableBuffs.name = "AvailableBuffList";
-            availableBuffs.GetComponentInChildren<GridLayoutGroupWorkaround>().constraintCount = 2;
+            var templateGrid = availableBuffs.GetComponentInChildren<GridLayoutGroupWorkaround>();
+            if (templateGrid != null)
+                templateGrid.constraintCount = 2;
             Main.Verbose("set constraint count");
             var listRect = availableBuffs.transform as RectTransform;
             listRect.localPosition = Vector2.zero;
@@ -3937,13 +3976,23 @@ namespace BuffIt2TheLimit {
             Main.Verbose($"destroyed old stuff: {scrollContent.childCount}");
             //widgetListDrawHandle = buffWidgetList.DrawEntries<IWidgetView>(models, new List<IWidgetView> { spellPrefab });
 
+            var levelSections = MakeLevelSections(scrollContent);
+
             Color goodSpellColor = new Color(0.2f, 0.7f, 0.2f);
 
             OwlcatButton previousSelection = null;
             widgetCache.ResetStats();
             using (new BubbleProfiler("making widgets")) {
                 foreach (var buff in state.BuffList) {
-                    GameObject widget = widgetCache.Get(scrollContent);
+                    LevelSection section = null;
+                    if (levelSections != null) {
+                        if (!levelSections.TryGetValue(LevelGroupOf(buff), out section)) {
+                            Main.Error($"buff list: no level section for {buff.Name}");
+                            continue;
+                        }
+                    }
+                    GameObject widget = widgetCache.Get(section?.Grid ?? scrollContent);
+                    section?.Widgets.Add(widget);
                     var button = widget.GetComponent<OwlcatButton>();
                     button.OnHover.RemoveAllListeners();
                     button.OnHover.AddListener(hover => {
@@ -3997,6 +4046,112 @@ namespace BuffIt2TheLimit {
             foreach (var buff in state.BuffList) {
                 buff.OnUpdate();
             }
+
+            if (levelSections != null) {
+                // The content above the section stack only resizes once the new
+                // children have been measured; without this the first frame shows
+                // the old content height and the scrollbar math is off.
+                LayoutRebuilder.ForceRebuildLayoutImmediate((RectTransform)scrollContent);
+            }
+        }
+
+        private static int LevelGroupOf(BubbleBuff buff) {
+            if (buff.IsActivatable)
+                return -1;
+            // -1 = "Other": activatables/songs have no spell level. Null-conditional
+            // keeps this compiling whether AbilityData.SpellLevel is int or int?.
+            return buff.Spell?.SpellLevel ?? -1;
+        }
+
+        private static string LevelHeader(int level) =>
+            level < 0 ? "level.other".i8() : string.Format("level.header".i8(), level);
+
+        /// <summary>
+        /// Replaces the prefab's single 2-column spell grid with one section per
+        /// spell level (localized header + its own 2-column grid), stacked by a
+        /// VerticalLayoutGroup. A GridLayoutGroup cannot render a header spanning
+        /// both columns, and a GameObject may only carry one LayoutGroup
+        /// (DisallowMultipleComponent), so the flat grid has to go.
+        /// Returns level -> section, or null when the prefab's grid isn't on the
+        /// scroll content (caller then keeps the flat, ungrouped list).
+        /// </summary>
+        private Dictionary<int, LevelSection> MakeLevelSections(Transform scrollContent) {
+            buffSections.Clear();
+
+            var template = scrollContent.GetComponent<GridLayoutGroup>();
+            if (template == null) {
+                Main.Log("buff list: no GridLayoutGroup on scroll content — level grouping disabled");
+                return null;
+            }
+
+            var cellSize = template.cellSize;
+            var spacing = template.spacing;
+            var corner = template.startCorner;
+            var alignment = template.childAlignment;
+            // Keep the prefab's horizontal inset, drop its vertical padding — the
+            // stack spacing already separates the levels.
+            var padding = new RectOffset(template.padding.left, template.padding.right, 0, 0);
+            Main.Verbose($"buff list level grid: cell={cellSize} spacing={spacing} padding={padding.left}/{padding.right}");
+
+            GameObject.DestroyImmediate(template);
+
+            var stack = scrollContent.gameObject.AddComponent<VerticalLayoutGroup>();
+            stack.childControlWidth = true;
+            stack.childControlHeight = true;
+            stack.childForceExpandWidth = true;
+            stack.childForceExpandHeight = false;
+            stack.spacing = 6;
+
+            var levels = state.BuffList
+                .Select(LevelGroupOf)
+                .Distinct()
+                .OrderBy(level => level < 0 ? int.MaxValue : level)
+                .ToList();
+
+            var sections = new Dictionary<int, LevelSection>();
+            foreach (var level in levels) {
+                var sectionObj = new GameObject($"level-{(level < 0 ? "other" : level.ToString())}", typeof(RectTransform));
+                sectionObj.transform.SetParent(scrollContent, false);
+                var sectionLayout = sectionObj.AddComponent<VerticalLayoutGroup>();
+                sectionLayout.childControlWidth = true;
+                sectionLayout.childControlHeight = true;
+                sectionLayout.childForceExpandWidth = true;
+                sectionLayout.childForceExpandHeight = false;
+                sectionLayout.spacing = 2;
+
+                var headerObj = new GameObject("header", typeof(RectTransform));
+                headerObj.transform.SetParent(sectionObj.transform, false);
+                var headerLE = headerObj.AddComponent<LayoutElement>();
+                headerLE.minHeight = 22f;
+                headerLE.preferredHeight = 22f;
+                // Beat TMP's own ILayoutElement (priority 1), which would otherwise
+                // dictate the row height (see gotchas-ui.md).
+                headerLE.layoutPriority = 2;
+                var header = headerObj.AddComponent<TextMeshProUGUI>();
+                header.text = LevelHeader(level);
+                header.fontSize = 18f;
+                header.color = new Color(1f, 0.85f, 0.5f);
+                header.alignment = TextAlignmentOptions.MidlineLeft;
+                header.enableWordWrapping = false;
+                header.raycastTarget = false;
+
+                var gridObj = new GameObject("grid", typeof(RectTransform));
+                gridObj.transform.SetParent(sectionObj.transform, false);
+                var grid = gridObj.AddComponent<GridLayoutGroupWorkaround>();
+                grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+                grid.constraintCount = 2;
+                grid.cellSize = cellSize;
+                grid.spacing = spacing;
+                grid.padding = padding;
+                grid.startCorner = corner;
+                grid.childAlignment = alignment;
+
+                var section = new LevelSection { Root = sectionObj, Header = headerObj, Grid = gridObj.transform };
+                buffSections.Add(section);
+                sections[level] = section;
+            }
+
+            return sections;
         }
 
         public void Update() {

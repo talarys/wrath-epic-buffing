@@ -10,6 +10,8 @@
   "showreq": "显示已应用法术",
   "showNOTreq": "显示未应用法术",
   "sort.name": "按名字排序",
+  "level.header": "等级 {0}",
+  "level.other": "其他",
   "group.normal": "标准施法序列",
   "group.important": "重要施法序列",
   "group.short": "快速施法序列",

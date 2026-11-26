@@ -10,6 +10,8 @@
   "showreq": "Montrer sorts appliqués",
   "showNOTreq": "Montrer sorts NON appliqués",
   "sort.name": "Trier par nom",
+  "level.header": "Niveau {0}",
+  "level.other": "Autres",
   "group.normal": "Buffs Normaux",
   "group.important": "Buffs Importants",
   "group.short": "Buffs Rapides",

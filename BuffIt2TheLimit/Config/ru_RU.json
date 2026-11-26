@@ -10,6 +10,8 @@
   "showreq": "Показывать примененные",
   "showNOTreq": "Показывать НЕ примененные",
   "sort.name": "Сортировать по названию",
+  "level.header": "Уровень {0}",
+  "level.other": "Прочее",
   "group.normal": "Нормальные",
   "group.important": "Важные",
   "group.short": "Быстрые",

@@ -10,6 +10,8 @@
   "showreq": "Show applied",
   "showNOTreq": "Show NOT applied",
   "sort.name": "Sort by name",
+  "level.header": "Level {0}",
+  "level.other": "Other",
   "group.normal": "Normal Buffs",
   "group.important": "Important Buffs",
   "group.short": "Quick Buffs",
